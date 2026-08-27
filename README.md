@@ -2,6 +2,10 @@
 
 Charge Cap replaces the Omarchy battery widget with the same popover plus a CHARGE LIMIT slider. The slider writes the kernel charge end threshold.
 
+![Charge Cap on the Omarchy bar](preview.png)
+
+![Charge Cap panel](screenshots/panel.png)
+
 ## Install
 
 If another clone of `omarchy.power` is already on the bar, such as `zeusveilmon.power`, disable or remove it first. Enable only replaces `omarchy.power` in place.
