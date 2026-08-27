@@ -22,9 +22,12 @@ const sysfs = { kind: "sysfs", path: path, privileged: false }
 const pkexec = { kind: "sysfs", path: path, privileged: true }
 
 assert.strictEqual(Model.isThresholdPath(path), true)
+assert.strictEqual(Model.isThresholdPath("/sys/class/power_supply/BAT1/charge_control_end_threshold"), true)
 assert.strictEqual(Model.isThresholdPath("/tmp/charge_control_end_threshold"), false)
 assert.strictEqual(Model.isThresholdPath("/sys/class/power_supply/BAT0/uevent"), false)
+assert.strictEqual(Model.isThresholdPath("/sys/class/power_supply/BAT0/charge_control_end_threshold;id"), false)
 assert.strictEqual(Model.findThresholdPath("nope\n" + path + "\n"), path)
+assert.strictEqual(Model.findThresholdPath("/sys/class/power_supply/BAT1/charge_control_end_threshold\n"), "/sys/class/power_supply/BAT1/charge_control_end_threshold")
 assert.strictEqual(Model.findThresholdPath(""), null)
 
 assert.deepStrictEqual(Model.pickWriter({}), { kind: "none" })

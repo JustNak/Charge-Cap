@@ -138,6 +138,15 @@ Panel {
     else chargeLimitKind = "unavailable"
   }
 
+  function startWriterProbes() {
+    probedAsusctl = false
+    probedWritable = false
+    probedPkexec = false
+    if (!pathProbeProc.running) pathProbeProc.running = true
+    if (!asusctlProbeProc.running) asusctlProbeProc.running = true
+    if (!pkexecProbeProc.running) pkexecProbeProc.running = true
+  }
+
   function batteryIcon() {
     var device = UPower.displayDevice
     return Model.batteryIcon(device, root.discharging, upowerStates())
@@ -289,6 +298,7 @@ Panel {
       profileIndex = idx >= 0 ? idx : 0
       cursorActive = false
       focusSection = chargeLimitReady ? "limit" : "profile"
+      startWriterProbes()
     }
   }
 
@@ -390,11 +400,7 @@ Panel {
     }
   }
 
-  Component.onCompleted: {
-    if (!pathProbeProc.running) pathProbeProc.running = true
-    if (!asusctlProbeProc.running) asusctlProbeProc.running = true
-    if (!pkexecProbeProc.running) pkexecProbeProc.running = true
-  }
+  Component.onCompleted: startWriterProbes()
 
   Timer { interval: 5000; running: root.opened; repeat: true; onTriggered: root.refresh() }
 
