@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "id": "justnak.charge-cap",
+  "name": "Charge Cap",
+  "version": "1.0.0",
+  "author": "JustNak",
+  "license": "MIT",
+  "description": "Replaces the Omarchy battery widget with a 60 to 100% firmware charge-limit slider.",
+  "kinds": ["bar-widget"],
+  "entryPoints": {
+    "barWidget": "Panel.qml"
+  },
+  "barWidget": {
+    "displayName": "Charge Cap",
+    "description": "Battery, power profile, and a firmware charge-limit slider",
+    "category": "System",
+    "allowMultiple": false,
+    "defaultSection": "right"
+  },
+  "omarchy": {
+    "clonedFrom": "omarchy.power"
+  }
+}
