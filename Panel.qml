@@ -24,7 +24,14 @@ Panel {
   property int chargeLimit: 60
   property int pendingChargeLimit: 60
   property bool chargeLimitSetQueued: false
-  property bool writerPresent: false
+  property var chargeWriter: ({ kind: "none" })
+  property string thresholdPath: ""
+  property bool hasAsusctl: false
+  property bool sysfsWritable: false
+  property bool hasPkexec: false
+  property bool probedAsusctl: false
+  property bool probedWritable: false
+  property bool probedPkexec: false
   readonly property bool chargeLimitReady: chargeLimitKind === "ready"
   readonly property bool showPercentage: setting("showPercentage", false) === true
   // With the percentage shown the button paints a text block wider than an
@@ -82,11 +89,12 @@ Panel {
 
   function updateChargeLimit(raw) {
     if (limitSetProc.running || chargeLimitSetQueued) return
-    applyLimitState(Model.readState(raw, writerPresent))
+    applyLimitState(Model.readState(raw, chargeWriter))
   }
 
   function setChargeLimit(value) {
-    if (!writerPresent) {
+    var cmd = Model.writeCommand(chargeWriter, value)
+    if (!cmd) {
       chargeLimitKind = "unavailable"
       return
     }
@@ -99,7 +107,7 @@ Panel {
       return
     }
     chargeLimitSetQueued = false
-    limitSetProc.command = ["/usr/bin/asusctl", "battery", "limit", String(next)]
+    limitSetProc.command = cmd
     limitSetProc.running = true
   }
 
@@ -113,9 +121,21 @@ Panel {
   }
 
   function refreshLimit() {
-    if (!writerPresent) return
+    if (!Model.writerAvailable(chargeWriter)) return
     if (limitSetProc.running || limitReadProc.running) return
     limitReadProc.running = true
+  }
+
+  function maybePickWriter() {
+    if (!probedAsusctl || !probedWritable || !probedPkexec) return
+    chargeWriter = Model.pickWriter({
+      thresholdPath: thresholdPath,
+      hasAsusctl: hasAsusctl,
+      sysfsWritable: sysfsWritable,
+      hasPkexec: hasPkexec
+    })
+    if (Model.writerAvailable(chargeWriter)) refreshLimit()
+    else chargeLimitKind = "unavailable"
   }
 
   function batteryIcon() {
@@ -302,15 +322,50 @@ Panel {
   }
 
   Process {
-    id: writerProbeProc
+    id: pathProbeProc
+    command: ["/bin/sh", "-c", "ls -1 /sys/class/power_supply/BAT*/charge_control_end_threshold 2>/dev/null"]
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        root.thresholdPath = Model.findThresholdPath(text) || ""
+        if (!root.thresholdPath) {
+          root.sysfsWritable = false
+          root.probedWritable = true
+          root.maybePickWriter()
+          return
+        }
+        writableProbeProc.command = ["/usr/bin/test", "-w", root.thresholdPath]
+        writableProbeProc.running = true
+      }
+    }
+  }
+
+  Process {
+    id: asusctlProbeProc
     command: ["/usr/bin/test", "-x", "/usr/bin/asusctl"]
     onExited: function(exitCode) {
-      root.writerPresent = exitCode === 0
-      if (!root.writerPresent) {
-        root.chargeLimitKind = "unavailable"
-        return
-      }
-      root.refreshLimit()
+      root.hasAsusctl = exitCode === 0
+      root.probedAsusctl = true
+      root.maybePickWriter()
+    }
+  }
+
+  Process {
+    id: writableProbeProc
+    onExited: function(exitCode) {
+      root.sysfsWritable = exitCode === 0
+      root.probedWritable = true
+      root.maybePickWriter()
+    }
+  }
+
+  Process {
+    id: pkexecProbeProc
+    command: ["/usr/bin/test", "-x", "/usr/bin/pkexec"]
+    onExited: function(exitCode) {
+      root.hasPkexec = exitCode === 0
+      root.probedPkexec = true
+      root.maybePickWriter()
     }
   }
 
@@ -335,7 +390,11 @@ Panel {
     }
   }
 
-  Component.onCompleted: if (!writerProbeProc.running) writerProbeProc.running = true
+  Component.onCompleted: {
+    if (!pathProbeProc.running) pathProbeProc.running = true
+    if (!asusctlProbeProc.running) asusctlProbeProc.running = true
+    if (!pkexecProbeProc.running) pkexecProbeProc.running = true
+  }
 
   Timer { interval: 5000; running: root.opened; repeat: true; onTriggered: root.refresh() }
 
