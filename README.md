@@ -1,6 +1,6 @@
 # Charge Cap
 
-Charge Cap replaces the Omarchy battery widget with the same popover plus a CHARGE LIMIT slider. The slider writes the firmware charge end threshold through `asusctl`.
+Charge Cap replaces the Omarchy battery widget with the same popover plus a CHARGE LIMIT slider. The slider writes the kernel charge end threshold.
 
 ## Install
 
@@ -14,14 +14,15 @@ Click the battery button. CHARGE LIMIT sits above POWER PROFILE. Drag the slider
 
 ## Hardware
 
-The slider is shown only when both of these exist:
+The slider is shown when the kernel exposes `/sys/class/power_supply/BAT*/charge_control_end_threshold` and Charge Cap can write it.
 
-- `/sys/class/power_supply/BAT*/charge_control_end_threshold`
-- `/usr/bin/asusctl` (asusd)
+Write order:
 
-Writes use `asusctl battery limit N`. That command talks to asusd over D-Bus. It does not prompt for sudo. The kernel node is root-writable, so a raw sysfs write is not used.
+1. `asusctl battery limit N` when `/usr/bin/asusctl` exists. No password prompt. ASUS machines with asusd take this path.
+2. A direct write to the sysfs node when the node is user-writable.
+3. `pkexec /bin/sh` writing that same node. Omarchy's polkit agent prompts once per change. ThinkPad, Framework, Dell, and other machines that only allow root to write the node take this path.
 
-The control range is 60 to 100 percent. asusd itself allows 20 to 100. Charge Cap does not expose values below 60. Persistence is firmware and asusd, not a file in this plugin.
+There is no slider when the kernel node is missing. Persistence is the kernel driver, not a file in this plugin. The control range is 60 to 100 percent.
 
 ## Remove
 

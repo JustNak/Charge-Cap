@@ -114,8 +114,53 @@ function parseChargeLimit(raw) {
   return n
 }
 
-function readState(raw, writable) {
-  if (!writable) return { kind: "unavailable" }
+function isThresholdPath(path) {
+  return /^\/sys\/class\/power_supply\/BAT[A-Za-z0-9._-]+\/charge_control_end_threshold$/.test(String(path || ""))
+}
+
+function findThresholdPath(listing) {
+  var lines = String(listing || "").split("\n")
+  for (var i = 0; i < lines.length; i++) {
+    var line = lines[i].trim()
+    if (isThresholdPath(line)) return line
+  }
+  return null
+}
+
+function noneWriter() {
+  return { kind: "none" }
+}
+
+function writerAvailable(writer) {
+  return !!(writer && writer.kind && writer.kind !== "none")
+}
+
+function pickWriter(facts) {
+  var f = facts || {}
+  var path = isThresholdPath(f.thresholdPath) ? f.thresholdPath : null
+  if (!path) return noneWriter()
+  if (f.hasAsusctl) return { kind: "asusctl" }
+  if (f.sysfsWritable) return { kind: "sysfs", path: path, privileged: false }
+  if (f.hasPkexec) return { kind: "sysfs", path: path, privileged: true }
+  return noneWriter()
+}
+
+function writeCommand(writer, percent) {
+  var n = clampChargeLimit(percent)
+  if (!writer) return null
+  if (writer.kind === "asusctl")
+    return ["/usr/bin/asusctl", "battery", "limit", String(n)]
+  if (writer.kind === "sysfs" && isThresholdPath(writer.path)) {
+    var script = "printf '%s\\n' \"$1\" > \"$2\""
+    var argv = ["/bin/sh", "-c", script, "charge-cap", String(n), writer.path]
+    if (writer.privileged) argv.unshift("/usr/bin/pkexec")
+    return argv
+  }
+  return null
+}
+
+function readState(raw, writer) {
+  if (!writerAvailable(writer)) return { kind: "unavailable" }
   var parsed = parseChargeLimit(raw)
   if (parsed === null) return { kind: "unavailable" }
   return { kind: "ready", value: clampChargeLimit(parsed) }
@@ -136,6 +181,12 @@ if (typeof module !== "undefined") {
     chargeLimitMax: chargeLimitMax,
     clampChargeLimit: clampChargeLimit,
     parseChargeLimit: parseChargeLimit,
+    isThresholdPath: isThresholdPath,
+    findThresholdPath: findThresholdPath,
+    noneWriter: noneWriter,
+    writerAvailable: writerAvailable,
+    pickWriter: pickWriter,
+    writeCommand: writeCommand,
     readState: readState
   }
 }
