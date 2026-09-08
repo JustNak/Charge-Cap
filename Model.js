@@ -146,8 +146,9 @@ function formatDuration(seconds) {
 
 function secondsUntilChargeLimit(input) {
   var i = input || {}
+  if (i.limit == null || i.limit === "") return null
   var limit = Number(i.limit)
-  if (!isFinite(limit) || limit < 0) return null
+  if (!isFinite(limit) || limit <= 0) return null
 
   var percent = Number(i.percent)
   var energy = Number(i.energyWh)

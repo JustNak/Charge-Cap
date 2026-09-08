@@ -111,5 +111,6 @@ assert.strictEqual(Model.timeUntilChargeLimit(Object.assign({}, live, { percent:
 assert.strictEqual(Model.timeUntilChargeLimit({ percent: 79, limit: 80, timeToFull: 1.6 * 3600 }), "5m")
 assert.strictEqual(Model.timeUntilChargeLimit({ percent: 50, limit: 80, rateW: 20, capacityWh: 60 }), "54m")
 assert.strictEqual(Model.timeUntilChargeLimit({ limit: NaN, rateW: 8.7, capacityWh: 66, percent: 79 }), null)
+assert.strictEqual(Model.timeUntilChargeLimit({ limit: null, rateW: 8.7, capacityWh: 66, percent: 79, energyWh: 52 }), null)
 
 console.log("ok")
