@@ -18,7 +18,7 @@ Click the battery button. CHARGE LIMIT sits above POWER PROFILE. Drag the slider
 
 ## Hardware
 
-The slider is shown when the kernel exposes `/sys/class/power_supply/BAT*/charge_control_end_threshold` and Charge Cap can write it.
+The slider is shown when the kernel exposes `/sys/class/power_supply/BAT*/charge_control_end_threshold` and Charge Cap can write it. Time to full is until that limit, not 100%.
 
 Write order:
 

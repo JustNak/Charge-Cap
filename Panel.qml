@@ -178,6 +178,27 @@ Panel {
     return d && d.isPresent && !UPower.onBattery && !root.batteryFlowIdle
   }
 
+  readonly property string timeDisplay: {
+    if (root.batteryFlowIdle) return "-"
+    if (!root.discharging) {
+      var d = UPower.displayDevice
+      var limit = root.chargeLimitReady
+        ? root.chargeLimit
+        : Model.parseThresholdEnd(root.batteryInfo.threshold)
+      var label = Model.timeUntilChargeLimit({
+        percent: d && d.isPresent ? d.percentage * 100 : Model.parseLeadingNumber(root.batteryInfo.percentage),
+        limit: limit,
+        rateW: Model.parseLeadingNumber(root.batteryInfo.rate),
+        changeRate: d ? d.changeRate : NaN,
+        capacityWh: d && d.energyCapacity > 0 ? d.energyCapacity : Model.parseLeadingNumber(root.batteryInfo.size),
+        energyWh: d ? d.energy : NaN,
+        timeToFull: d ? d.timeToFull : NaN
+      })
+      if (label) return label
+    }
+    return root.batteryInfo.time || "—"
+  }
+
   readonly property color batteryFillColor: {
     return root.bar ? root.bar.foreground : Color.foreground
   }
@@ -607,7 +628,7 @@ Panel {
             spacing: Style.spacing.labelGap
             InfoPair {
               label: root.discharging ? "Time left" : "Time to full"
-              value: root.batteryFlowIdle ? "-" : (root.batteryInfo.time || "—")
+              value: root.timeDisplay
             }
             InfoPair {
               label: root.chargeThresholdActive ? "Battery state" : (root.discharging ? "Discharging" : "Charging")

@@ -114,6 +114,77 @@ function parseChargeLimit(raw) {
   return n
 }
 
+function parseLeadingNumber(raw) {
+  var match = String(raw || "").match(/-?\d+(?:\.\d+)?/)
+  if (!match) return NaN
+  return Number(match[0])
+}
+
+function parseThresholdEnd(raw) {
+  var text = String(raw || "").trim()
+  if (!text) return null
+  var matches = text.match(/\d{1,3}(?=\s*%)/g)
+  if (matches && matches.length > 0) {
+    var n = Number(matches[matches.length - 1])
+    if (isFinite(n) && n >= 0 && n <= 100) return n
+  }
+  return parseChargeLimit(text)
+}
+
+function formatDuration(seconds) {
+  var s = Number(seconds)
+  if (!isFinite(s) || s < 0) return ""
+  if (s === 0) return "0m"
+  var totalMinutes = Math.round(s / 60)
+  if (totalMinutes < 1) return "<1m"
+  if (totalMinutes < 60) return totalMinutes + "m"
+  var hours = Math.floor(totalMinutes / 60)
+  var minutes = totalMinutes % 60
+  if (minutes === 0) return hours + "h"
+  return hours + "h " + minutes + "m"
+}
+
+function secondsUntilChargeLimit(input) {
+  var i = input || {}
+  var limit = Number(i.limit)
+  if (!isFinite(limit) || limit < 0) return null
+
+  var percent = Number(i.percent)
+  var energy = Number(i.energyWh)
+  var capacity = Number(i.capacityWh)
+  if ((!isFinite(capacity) || capacity <= 0) && isFinite(energy) && energy > 0 && isFinite(percent) && percent > 0) {
+    capacity = energy / (percent / 100)
+  }
+
+  var currentEnergy = NaN
+  if (isFinite(energy) && energy >= 0) currentEnergy = energy
+  else if (isFinite(capacity) && capacity > 0 && isFinite(percent)) currentEnergy = capacity * percent / 100
+
+  if (isFinite(currentEnergy) && isFinite(capacity) && capacity > 0) {
+    var remaining = capacity * Math.min(limit, 100) / 100 - currentEnergy
+    if (remaining <= 0) return 0
+    var rate = Number(i.rateW)
+    if (!isFinite(rate) || rate <= 0) rate = Number(i.changeRate)
+    if (isFinite(rate) && rate > 0) return remaining / rate * 3600
+  }
+
+  // UPower's timeToFull is to 100%, not the charge-end threshold.
+  var ttf = Number(i.timeToFull)
+  if (!isFinite(ttf) || ttf <= 0 || !isFinite(percent)) return null
+  var toLimit = limit - percent
+  if (toLimit <= 0) return 0
+  var toFull = 100 - percent
+  if (toFull <= 0) return 0
+  return ttf * toLimit / toFull
+}
+
+function timeUntilChargeLimit(input) {
+  var seconds = secondsUntilChargeLimit(input)
+  if (seconds === null) return null
+  if (seconds <= 0) return "-"
+  return formatDuration(seconds)
+}
+
 function isThresholdPath(path) {
   return /^\/sys\/class\/power_supply\/BAT[A-Za-z0-9._-]+\/charge_control_end_threshold$/.test(String(path || ""))
 }
@@ -181,6 +252,11 @@ if (typeof module !== "undefined") {
     chargeLimitMax: chargeLimitMax,
     clampChargeLimit: clampChargeLimit,
     parseChargeLimit: parseChargeLimit,
+    parseLeadingNumber: parseLeadingNumber,
+    parseThresholdEnd: parseThresholdEnd,
+    formatDuration: formatDuration,
+    secondsUntilChargeLimit: secondsUntilChargeLimit,
+    timeUntilChargeLimit: timeUntilChargeLimit,
     isThresholdPath: isThresholdPath,
     findThresholdPath: findThresholdPath,
     noneWriter: noneWriter,
