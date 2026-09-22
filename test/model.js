@@ -113,4 +113,100 @@ assert.strictEqual(Model.timeUntilChargeLimit({ percent: 50, limit: 80, rateW: 2
 assert.strictEqual(Model.timeUntilChargeLimit({ limit: NaN, rateW: 8.7, capacityWh: 66, percent: 79 }), null)
 assert.strictEqual(Model.timeUntilChargeLimit({ limit: null, rateW: 8.7, capacityWh: 66, percent: 79, energyWh: 52 }), null)
 
+assert.strictEqual(Model.firmwareCycleCount("0"), null)
+assert.strictEqual(Model.firmwareCycleCount(" 0\n"), null)
+assert.strictEqual(Model.firmwareCycleCount(""), null)
+assert.strictEqual(Model.firmwareCycleCount("N/A"), null)
+assert.strictEqual(Model.firmwareCycleCount("26"), 26)
+
+const report = Model.parseCycleReport("firmware\t0\npoint\t1000\t80\npoint\t1002\t79\npoint\t8200\t55\npoint\t8202\t0\npoint\t8202\t55\n")
+assert.strictEqual(report.firmware, null)
+assert.strictEqual(report.points.length, 5)
+assert.strictEqual(Model.parseCycleReport(""), null)
+
+const first = Model.advanceCycleLedger(null, report.points)
+assert.strictEqual(first.dischargedPercent, 25)
+assert.strictEqual(first.coveredUntil, 8200)
+assert.strictEqual(first.cycles, 0.25)
+const again = Model.advanceCycleLedger(first, report.points)
+assert.strictEqual(again.dischargedPercent, 25)
+assert.strictEqual(again.coveredUntil, 8202)
+assert.strictEqual(again.cycles, 0.25)
+
+const closed = Model.advanceCycleLedger(first, report.points.concat([{ t: 20000, percent: 80 }]))
+assert.strictEqual(closed.dischargedPercent, 25)
+assert.strictEqual(closed.coveredUntil, 20000)
+assert.strictEqual(closed.cycles, 0.25)
+const closedAgain = Model.advanceCycleLedger(closed, report.points.concat([{ t: 20000, percent: 80 }]))
+assert.strictEqual(closedAgain.dischargedPercent, 25)
+assert.strictEqual(closedAgain.cycles, 0.25)
+
+const glitch = Model.advanceCycleLedger(null, [
+  { t: 10, percent: 90 },
+  { t: 12, percent: 50 }
+])
+assert.strictEqual(glitch.cycles, 0)
+
+const sleep = Model.advanceCycleLedger(null, [
+  { t: 1000, percent: 90 },
+  { t: 1000 + 4 * 3600, percent: 70 }
+])
+assert.strictEqual(sleep.cycles, 0.2)
+
+const bounce = Model.advanceCycleLedger(null, [
+  { t: 1000, percent: 80 },
+  { t: 1030, percent: 79 },
+  { t: 1060, percent: 80 }
+])
+assert.strictEqual(bounce.cycles, 0)
+assert.strictEqual(bounce.dischargedPercent, 0)
+
+const chatter = Model.advanceCycleLedger(null, [
+  { t: 1000, percent: 80 },
+  { t: 1020, percent: 79 },
+  { t: 1040, percent: 78 },
+  { t: 1100, percent: 80 }
+])
+assert.strictEqual(chatter.cycles, 0)
+
+const used = Model.advanceCycleLedger(null, [
+  { t: 1000, percent: 100 },
+  { t: 1000 + 2 * 3600, percent: 50 },
+  { t: 1000 + 3 * 3600, percent: 100 }
+])
+assert.strictEqual(used.dischargedPercent, 50)
+assert.strictEqual(used.cycles, 0.5)
+assert.strictEqual(Model.advanceCycleLedger(used, [
+  { t: 1000, percent: 100 },
+  { t: 1000 + 2 * 3600, percent: 50 },
+  { t: 1000 + 3 * 3600, percent: 100 }
+]).dischargedPercent, 50)
+
+assert.deepStrictEqual(Model.parseCycleLedger(""), { dischargedPercent: 0, coveredUntil: 0 })
+assert.strictEqual(Model.parseCycleLedger("{"), null)
+assert.deepStrictEqual(Model.parseCycleLedger("{\"dischargedPercent\":1049,\"coveredUntil\":9}\n"), {
+  dischargedPercent: 0,
+  coveredUntil: 0
+})
+assert.deepStrictEqual(Model.parseCycleLedger("{\"version\":2,\"dischargedPercent\":12.5,\"coveredUntil\":9}\n"), {
+  dischargedPercent: 12.5,
+  coveredUntil: 9
+})
+
+assert.strictEqual(Model.formatChargeCycles(10.5), "10.5")
+assert.strictEqual(Model.formatChargeCycles(10), "10")
+assert.strictEqual(Model.formatChargeCycles(0), "0")
+assert.strictEqual(Model.formatChargeCycles(-1), "")
+
+const reportCmd = Model.cycleReportCommand()
+assert.strictEqual(reportCmd[0], "/bin/sh")
+assert.ok(reportCmd[2].indexOf("printf 'firmware\\t%s\\n'") !== -1 || reportCmd[2].indexOf("printf 'firmware\t%s\n'") !== -1)
+assert.ok(reportCmd[2].indexOf("GetHistory suu charge 0 60") >= 0)
+assert.strictEqual(Model.cycleLedgerWriteCommand("", { dischargedPercent: 1, coveredUntil: 2 }), null)
+assert.deepStrictEqual(
+  Model.cycleLedgerWriteCommand("/tmp/charge-cap-cycles", { dischargedPercent: 10.5, coveredUntil: 99 }),
+  ["/bin/sh", "-c", "mkdir -p -- \"$1\" && printf '%s\\n' \"$2\" > \"$1/cycles.json\"", "cycle-cap", "/tmp/charge-cap-cycles",
+    "{\"version\":2,\"dischargedPercent\":10.5,\"coveredUntil\":99}"]
+)
+
 console.log("ok")

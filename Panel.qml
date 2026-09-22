@@ -14,6 +14,21 @@ Panel {
   // permits — needed for the togglePercentage method below.
   manageIpc: false
   property var batteryInfo: ({})
+  property int firmwareCycles: -1
+  property real calculatedCycles: -1
+  property var cycleLedger: ({ dischargedPercent: 0, coveredUntil: 0 })
+  property bool cycleLedgerDirty: false
+  readonly property string cycleStateDir: {
+    var state = Quickshell.env("XDG_STATE_HOME")
+    if (state && state.length > 0) return state + "/omarchy/justnak.charge-cap"
+    return (Quickshell.env("HOME") || "") + "/.local/state/omarchy/justnak.charge-cap"
+  }
+  readonly property string cycleStatePath: cycleStateDir + "/cycles.json"
+  readonly property string chargeCyclesText: {
+    if (firmwareCycles > 0) return String(firmwareCycles)
+    if (calculatedCycles >= 0) return Model.formatChargeCycles(calculatedCycles)
+    return ""
+  }
   property var systemInfo: ({})
   property var profiles: []
   property string activeProfile: ""
@@ -253,6 +268,55 @@ Panel {
     refreshLimit()
   }
 
+  function refreshCycles() {
+    if (cycleProc.running) return
+    cycleProc.command = Model.cycleReportCommand()
+    cycleProc.running = true
+  }
+
+  function applyLedgerText(raw) {
+    var parsed = Model.parseCycleLedger(raw)
+    if (!parsed) return
+    if (cycleLedger && parsed.coveredUntil < cycleLedger.coveredUntil) return
+    if (parsed.coveredUntil === 0 && parsed.dischargedPercent === 0 && cycleLedger.coveredUntil > 0) return
+    var alreadyCounting = cycleLedger && cycleLedger.coveredUntil > 0
+    cycleLedger = parsed
+    if (!alreadyCounting && (parsed.dischargedPercent > 0 || parsed.coveredUntil > 0))
+      calculatedCycles = parsed.dischargedPercent / 100
+  }
+
+  function applyCycleReport(raw) {
+    var report = Model.parseCycleReport(raw)
+    if (!report) return
+    if (report.firmware !== null) {
+      firmwareCycles = report.firmware
+      return
+    }
+    if (report.points.length === 0) {
+      if (cycleLedger.dischargedPercent > 0 || cycleLedger.coveredUntil > 0)
+        calculatedCycles = cycleLedger.dischargedPercent / 100
+      return
+    }
+    var next = Model.advanceCycleLedger(cycleLedger, report.points)
+    var changed = !cycleLedger
+      || next.dischargedPercent !== cycleLedger.dischargedPercent
+      || next.coveredUntil !== cycleLedger.coveredUntil
+    cycleLedger = { dischargedPercent: next.dischargedPercent, coveredUntil: next.coveredUntil }
+    calculatedCycles = next.cycles
+    firmwareCycles = -1
+    if (changed) cycleLedgerDirty = true
+    flushLedger()
+  }
+
+  function flushLedger() {
+    if (!cycleLedgerDirty || cycleWriteProc.running) return
+    var cmd = Model.cycleLedgerWriteCommand(cycleStateDir, cycleLedger)
+    if (!cmd) return
+    cycleLedgerDirty = false
+    cycleWriteProc.command = cmd
+    cycleWriteProc.running = true
+  }
+
   function updateKeyValue(raw, targetName) {
     var next = Model.parseKeyValue(raw)
     // Keep last known good data if a refresh briefly returns nothing — happens
@@ -306,6 +370,7 @@ Panel {
       }
 
       refresh()
+      refreshCycles()
       var idx = profiles.indexOf(activeProfile)
       profileIndex = idx >= 0 ? idx : 0
       cursorActive = false
@@ -415,9 +480,40 @@ Panel {
     if (!pathProbeProc.running) pathProbeProc.running = true
     if (!asusctlProbeProc.running) asusctlProbeProc.running = true
     if (!pkexecProbeProc.running) pkexecProbeProc.running = true
+    refreshCycles()
   }
 
   Timer { interval: 5000; running: root.opened; repeat: true; onTriggered: root.refresh() }
+
+  FileView {
+    id: cycleLedgerFile
+    path: root.cycleStatePath
+    preload: true
+    watchChanges: true
+    printErrors: false
+    onLoaded: root.applyLedgerText(text())
+    onLoadFailed: root.applyLedgerText("")
+    onFileChanged: reload()
+  }
+
+  Process {
+    id: cycleProc
+    stdout: StdioCollector { waitForEnd: true; onStreamFinished: root.applyCycleReport(text) }
+  }
+
+  Process {
+    id: cycleWriteProc
+    onExited: function(code) {
+      if (code === 0) root.flushLedger()
+    }
+  }
+
+  Timer {
+    interval: 60000
+    running: true
+    repeat: true
+    onTriggered: root.refreshCycles()
+  }
 
   // Rotate the status phrase while the panel is open and we're in a
   // rotating state (charging or on battery). The text swap is wrapped in a
@@ -620,7 +716,7 @@ Panel {
             width: (parent.width - parent.spacing) / 2
             spacing: Style.spacing.labelGap
             InfoPair { label: "Battery size"; value: root.batteryInfo.size || "" }
-            InfoPair { label: "Charge cycles"; value: root.batteryInfo.cycles || "—" }
+            InfoPair { label: "Charge cycles"; value: root.chargeCyclesText || "—" }
           }
 
           Column {
