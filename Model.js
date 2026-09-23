@@ -347,7 +347,10 @@ function settleCycleLedger(previous, next) {
   var prevUntil = Number(previous.coveredUntil)
   if (!isFinite(prevTotal) || !isFinite(prevUntil)) return next
   var nextTotal = Number(next && next.dischargedPercent)
-  if (isFinite(nextTotal) && prevTotal - nextTotal > 1e-6) {
+  var nextUntil = Number(next && next.coveredUntil)
+  // A short history pass keeps the saved total but rewinds the cursor to its
+  // last sample. The next full pass would count that gap again.
+  if (!isFinite(nextTotal) || !isFinite(nextUntil) || prevTotal - nextTotal > 1e-6 || nextUntil < prevUntil) {
     return {
       dischargedPercent: prevTotal,
       coveredUntil: prevUntil,

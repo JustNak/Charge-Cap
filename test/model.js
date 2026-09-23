@@ -327,6 +327,51 @@ assert.strictEqual(settled.dischargedPercent, 743)
 assert.strictEqual(settled.coveredUntil, 50)
 assert.strictEqual(settled.cycles, 743 / 100)
 
+const rewound = Model.settleCycleLedger(
+  { dischargedPercent: 793, coveredUntil: 10000 },
+  { dischargedPercent: 793, coveredUntil: 3000, cycles: 7.93 }
+)
+assert.strictEqual(rewound.dischargedPercent, 793)
+assert.strictEqual(rewound.coveredUntil, 10000)
+
+function reportFrom(points) {
+  return "firmware\t0\n" + points.map(function(p) {
+    return "point\t" + p.t + "\t" + p.percent + "\t" + p.state
+  }).join("\n") + "\n"
+}
+const saved = {
+  ready: true,
+  dirty: false,
+  firmwareCycles: -1,
+  calculatedCycles: 7.93,
+  ledger: { dischargedPercent: 793, coveredUntil: 10000 }
+}
+const tail = [
+  { t: 1000, percent: 80, state: 2 },
+  { t: 2000, percent: 50, state: 2 },
+  { t: 3000, percent: 80, state: 2 }
+]
+const withGap = tail.concat([
+  { t: 8000, percent: 80, state: 2 },
+  { t: 9000, percent: 50, state: 2 }
+])
+const trimmed = Model.reduceCycleReport(saved, reportFrom(tail))
+assert.strictEqual(trimmed.ledger.dischargedPercent, 793)
+assert.strictEqual(trimmed.ledger.coveredUntil, 10000)
+assert.strictEqual(trimmed.dirty, false)
+const replayed = Model.reduceCycleReport(
+  {
+    ready: true,
+    dirty: trimmed.dirty,
+    firmwareCycles: -1,
+    calculatedCycles: trimmed.calculatedCycles,
+    ledger: trimmed.ledger
+  },
+  reportFrom(withGap)
+)
+assert.strictEqual(replayed.ledger.dischargedPercent, 793)
+assert.strictEqual(replayed.ledger.coveredUntil, 10000)
+
 assert.ok(reportCmd[2].indexOf("type") >= 0)
 assert.ok(reportCmd[2].indexOf("scope") >= 0)
 assert.ok(reportCmd[2].indexOf("Device") >= 0)
