@@ -18,6 +18,8 @@ Panel {
   property real calculatedCycles: -1
   property var cycleLedger: ({ dischargedPercent: 0, coveredUntil: 0 })
   property bool cycleLedgerDirty: false
+  property bool cycleLedgerReady: false
+  property string cycleWriteSnapshot: ""
   readonly property string cycleStateDir: {
     var state = Quickshell.env("XDG_STATE_HOME")
     if (state && state.length > 0) return state + "/omarchy/justnak.charge-cap"
@@ -269,42 +271,59 @@ Panel {
   }
 
   function refreshCycles() {
-    if (cycleProc.running) return
+    if (!cycleLedgerReady || cycleProc.running) return
     cycleProc.command = Model.cycleReportCommand()
     cycleProc.running = true
   }
 
   function applyLedgerText(raw) {
-    var parsed = Model.parseCycleLedger(raw)
-    if (!parsed) return
-    if (cycleLedger && parsed.coveredUntil < cycleLedger.coveredUntil) return
-    if (parsed.coveredUntil === 0 && parsed.dischargedPercent === 0 && cycleLedger.coveredUntil > 0) return
-    var alreadyCounting = cycleLedger && cycleLedger.coveredUntil > 0
-    cycleLedger = parsed
-    if (!alreadyCounting && (parsed.dischargedPercent > 0 || parsed.coveredUntil > 0))
-      calculatedCycles = parsed.dischargedPercent / 100
+    if (!cycleLedgerReady) {
+      var began = Model.beginCycleTracking(raw)
+      cycleLedger = {
+        dischargedPercent: began.ledger.dischargedPercent,
+        coveredUntil: began.ledger.coveredUntil
+      }
+      if (began.ledger.dischargedPercent > 0 || began.ledger.coveredUntil > 0)
+        calculatedCycles = began.ledger.dischargedPercent / 100
+      cycleLedgerReady = true
+      refreshCycles()
+      return
+    }
+    var incoming = Model.parseCycleLedger(raw)
+    if (!incoming) return
+    if (incoming.coveredUntil < cycleLedger.coveredUntil) return
+    if (incoming.dischargedPercent + 0.001 < cycleLedger.dischargedPercent) return
+    cycleLedger = {
+      dischargedPercent: incoming.dischargedPercent,
+      coveredUntil: incoming.coveredUntil
+    }
+    calculatedCycles = incoming.dischargedPercent / 100
+  }
+
+  function cycleState() {
+    return {
+      ready: cycleLedgerReady,
+      ledger: {
+        dischargedPercent: cycleLedger.dischargedPercent,
+        coveredUntil: cycleLedger.coveredUntil
+      },
+      firmwareCycles: firmwareCycles,
+      calculatedCycles: calculatedCycles,
+      dirty: cycleLedgerDirty
+    }
   }
 
   function applyCycleReport(raw) {
-    var report = Model.parseCycleReport(raw)
-    if (!report) return
-    if (report.firmware !== null) {
-      firmwareCycles = report.firmware
-      return
+    if (!cycleLedgerReady) return
+    var next = Model.reduceCycleReport(cycleState(), raw)
+    if (!next || !next.ledger) return
+    firmwareCycles = next.firmwareCycles
+    calculatedCycles = next.calculatedCycles
+    cycleLedger = {
+      dischargedPercent: next.ledger.dischargedPercent,
+      coveredUntil: next.ledger.coveredUntil
     }
-    if (report.points.length === 0) {
-      if (cycleLedger.dischargedPercent > 0 || cycleLedger.coveredUntil > 0)
-        calculatedCycles = cycleLedger.dischargedPercent / 100
-      return
-    }
-    var next = Model.advanceCycleLedger(cycleLedger, report.points)
-    var changed = !cycleLedger
-      || next.dischargedPercent !== cycleLedger.dischargedPercent
-      || next.coveredUntil !== cycleLedger.coveredUntil
-    cycleLedger = { dischargedPercent: next.dischargedPercent, coveredUntil: next.coveredUntil }
-    calculatedCycles = next.cycles
-    firmwareCycles = -1
-    if (changed) cycleLedgerDirty = true
+    if (next.dirty) cycleLedgerDirty = true
     flushLedger()
   }
 
@@ -312,7 +331,7 @@ Panel {
     if (!cycleLedgerDirty || cycleWriteProc.running) return
     var cmd = Model.cycleLedgerWriteCommand(cycleStateDir, cycleLedger)
     if (!cmd) return
-    cycleLedgerDirty = false
+    cycleWriteSnapshot = cycleLedger.dischargedPercent + ":" + cycleLedger.coveredUntil
     cycleWriteProc.command = cmd
     cycleWriteProc.running = true
   }
@@ -480,7 +499,6 @@ Panel {
     if (!pathProbeProc.running) pathProbeProc.running = true
     if (!asusctlProbeProc.running) asusctlProbeProc.running = true
     if (!pkexecProbeProc.running) pkexecProbeProc.running = true
-    refreshCycles()
   }
 
   Timer { interval: 5000; running: root.opened; repeat: true; onTriggered: root.refresh() }
@@ -504,13 +522,16 @@ Panel {
   Process {
     id: cycleWriteProc
     onExited: function(code) {
-      if (code === 0) root.flushLedger()
+      if (code !== 0) return
+      var now = root.cycleLedger.dischargedPercent + ":" + root.cycleLedger.coveredUntil
+      if (now === root.cycleWriteSnapshot) root.cycleLedgerDirty = false
+      root.flushLedger()
     }
   }
 
   Timer {
     interval: 60000
-    running: true
+    running: root.cycleLedgerReady
     repeat: true
     onTriggered: root.refreshCycles()
   }

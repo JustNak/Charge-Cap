@@ -28,6 +28,14 @@ Write order:
 
 There is no slider when the kernel node is missing. Persistence is the kernel driver, not a file in this plugin. The control range is 60 to 100 percent.
 
+## Charge cycles
+
+A firmware `cycle_count` above 0 is shown as an integer. A `cycle_count` of `0`, or a missing `cycle_count` file, means the firmware did not report a counter. Charge Cap then estimates equivalent cycles as percentage points discharged, divided by 100.
+
+The estimate is stored at `$XDG_STATE_HOME/omarchy/justnak.charge-cap/cycles.json`, or `~/.local/state/omarchy/justnak.charge-cap/cycles.json` when `XDG_STATE_HOME` is unset.
+
+Dips while UPower reports the pack charging or holding at the charge limit are not counted. The system battery is the first `type=Battery` supply that is not `scope=Device`.
+
 ## Remove
 
 ```sh
