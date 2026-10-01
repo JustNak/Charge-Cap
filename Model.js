@@ -186,6 +186,297 @@ function timeUntilChargeLimit(input) {
   return formatDuration(seconds)
 }
 
+// Kernel ABI: cycle_count of 0 means the firmware did not report a counter.
+function firmwareCycleCount(raw) {
+  var text = String(raw == null ? "" : raw).trim()
+  if (!/^\d+$/.test(text)) return null
+  var n = Number(text)
+  if (!isFinite(n) || n <= 0) return null
+  return n
+}
+
+function parseCycleReport(raw) {
+  var firmware = null
+  var sawFirmware = false
+  var points = []
+  var lines = String(raw || "").split("\n")
+  for (var i = 0; i < lines.length; i++) {
+    var parts = lines[i].trim().split("\t")
+    if (parts[0] === "firmware" && parts.length >= 2) {
+      sawFirmware = true
+      firmware = firmwareCycleCount(parts[1])
+    } else if (parts[0] === "point" && parts.length >= 3) {
+      var t = Number(parts[1])
+      var percent = Number(parts[2])
+      if (isFinite(t) && isFinite(percent)) {
+        var state = parts.length >= 4 ? Number(parts[3]) : NaN
+        points.push({ t: t, percent: percent, state: state })
+      }
+    }
+  }
+  if (!sawFirmware && points.length === 0) return null
+  return { firmware: firmware, points: points }
+}
+
+function parseCycleLedger(raw) {
+  if (!raw || !String(raw).trim()) return { dischargedPercent: 0, coveredUntil: 0 }
+  var parsed
+  try {
+    parsed = JSON.parse(raw)
+  } catch (e) {
+    return null
+  }
+  if (!parsed || typeof parsed !== "object") return null
+  if (Number(parsed.version) !== 3) return { dischargedPercent: 0, coveredUntil: 0 }
+  var discharged = Number(parsed.dischargedPercent)
+  var coveredUntil = Number(parsed.coveredUntil)
+  if (!isFinite(discharged) || discharged < 0 || !isFinite(coveredUntil) || coveredUntil < 0) return null
+  return { dischargedPercent: discharged, coveredUntil: coveredUntil }
+}
+
+function dischargeStateCounts(state) {
+  var n = Number(state)
+  if (!isFinite(n)) return true
+  var charging = 1
+  var fullyCharged = 4
+  var pendingCharge = 5
+  if (n === charging || n === fullyCharged || n === pendingCharge) return false
+  return true
+}
+
+function sampleHorizon(now) {
+  var t = Number(now)
+  if (!isFinite(t) || t <= 0) t = Date.now() / 1000
+  return t + 120
+}
+
+function validChargePoint(point) {
+  var percent = Number(point && point.percent)
+  var t = Number(point && point.t)
+  if (!(percent > 0 && percent <= 100) || !(t > 0)) return null
+  return { t: t, percent: percent, state: Number(point.state) }
+}
+
+function plausibleDischarge(drop, dtSeconds) {
+  if (!(drop > 0) || drop > 100) return false
+  if (drop <= 2) return true
+  if (!(dtSeconds > 0)) return false
+  return drop / (dtSeconds / 3600) <= 300
+}
+
+function accountDischarge(points, coveredUntil, now) {
+  var horizon = sampleHorizon(now)
+  var until = Number(coveredUntil)
+  if (!isFinite(until) || until < 0) until = 0
+  var sorted = (points || []).slice().sort(function(a, b) { return a.t - b.t })
+  var newest = 0
+  var kept = []
+  for (var j = 0; j < sorted.length; j++) {
+    var sample = validChargePoint(sorted[j])
+    if (!sample || sample.t > horizon) continue
+    if (sample.t > newest) newest = sample.t
+    kept.push(sample)
+  }
+  if (until > horizon && newest > 0) until = newest
+  var peak = null
+  var trough = null
+  var closed = 0
+  var endT = until
+  for (var i = 0; i < kept.length; i++) {
+    var point = kept[i]
+    endT = point.t
+    if (point.t <= until) {
+      peak = point
+      trough = point
+      continue
+    }
+    if (!peak) {
+      peak = point
+      trough = point
+      continue
+    }
+    if (point.percent < trough.percent - 0.05) {
+      var depth = peak.percent - point.percent
+      if (plausibleDischarge(depth, point.t - peak.t)) trough = point
+      continue
+    }
+    if (point.percent <= trough.percent + 0.05) continue
+    var drop = peak.percent - trough.percent
+    if (drop > 0.05) {
+      var span = point.t - peak.t
+      var restored = point.percent >= peak.percent - 0.05
+      var chatter = drop <= 2 && restored && span <= 120
+      if (!chatter && plausibleDischarge(drop, trough.t - peak.t) && dischargeStateCounts(trough.state)) closed += drop
+    }
+    peak = point
+    trough = point
+  }
+  var openDrop = 0
+  var persistUntil = endT
+  if (peak && trough && peak.percent - trough.percent > 0.05) {
+    var open = peak.percent - trough.percent
+    var age = trough.t - peak.t
+    if ((open > 2 || age > 120) && plausibleDischarge(open, age)) {
+      if (dischargeStateCounts(trough.state)) openDrop = open
+      persistUntil = trough.t
+    } else {
+      persistUntil = peak.t
+    }
+  }
+  return {
+    closed: Math.round(closed * 1000) / 1000,
+    openDrop: Math.round(openDrop * 1000) / 1000,
+    coveredUntil: persistUntil
+  }
+}
+
+function advanceCycleLedger(ledger, points, now) {
+  var base = 0
+  var until = 0
+  if (ledger) {
+    var discharged = Number(ledger.dischargedPercent)
+    var covered = Number(ledger.coveredUntil)
+    if (isFinite(discharged) && discharged >= 0) base = discharged
+    if (isFinite(covered) && covered >= 0) until = covered
+  }
+  var delta = accountDischarge(points, until, now)
+  var total = Math.round((base + delta.closed + delta.openDrop) * 1000) / 1000
+  return {
+    dischargedPercent: total,
+    coveredUntil: delta.coveredUntil,
+    cycles: total / 100
+  }
+}
+
+function settleCycleLedger(previous, next, now) {
+  if (!previous) return next
+  var prevTotal = Number(previous.dischargedPercent)
+  var prevUntil = Number(previous.coveredUntil)
+  if (!isFinite(prevTotal) || !isFinite(prevUntil)) return next
+  var nextTotal = Number(next && next.dischargedPercent)
+  var nextUntil = Number(next && next.coveredUntil)
+  var horizon = sampleHorizon(now)
+  var cursorAhead = prevUntil > horizon
+  if (!isFinite(nextTotal) || !isFinite(nextUntil) || prevTotal - nextTotal > 1e-6 || nextUntil > horizon || (!cursorAhead && nextUntil < prevUntil)) {
+    return {
+      dischargedPercent: prevTotal,
+      coveredUntil: prevUntil,
+      cycles: prevTotal / 100
+    }
+  }
+  return next
+}
+
+function beginCycleTracking(raw) {
+  var parsed = parseCycleLedger(raw)
+  if (parsed === null) {
+    return { ledger: { dischargedPercent: 0, coveredUntil: 0 }, ready: true, corrupt: true }
+  }
+  return { ledger: parsed, ready: true, corrupt: false }
+}
+
+function reduceCycleReport(state, raw, now) {
+  if (!state || state.ready !== true) return state
+  var report = parseCycleReport(raw)
+  if (report === null) return state
+  if (report.firmware !== null) {
+    return {
+      ready: state.ready,
+      ledger: state.ledger,
+      firmwareCycles: report.firmware,
+      calculatedCycles: state.calculatedCycles,
+      dirty: state.dirty
+    }
+  }
+  var ledger = state.ledger || { dischargedPercent: 0, coveredUntil: 0 }
+  if (report.points.length === 0) {
+    var calculated = state.calculatedCycles
+    var discharged = Number(ledger.dischargedPercent)
+    var covered = Number(ledger.coveredUntil)
+    if (discharged > 0 || covered > 0) calculated = discharged / 100
+    return {
+      ready: state.ready,
+      ledger: ledger,
+      firmwareCycles: -1,
+      calculatedCycles: calculated,
+      dirty: state.dirty
+    }
+  }
+  var next = settleCycleLedger(ledger, advanceCycleLedger(ledger, report.points, now), now)
+  var changed = Number(next.dischargedPercent) !== Number(ledger.dischargedPercent) ||
+    Number(next.coveredUntil) !== Number(ledger.coveredUntil)
+  return {
+    ready: state.ready,
+    ledger: {
+      dischargedPercent: next.dischargedPercent,
+      coveredUntil: next.coveredUntil
+    },
+    firmwareCycles: -1,
+    calculatedCycles: next.cycles,
+    dirty: state.dirty === true || changed
+  }
+}
+
+function formatChargeCycles(cycles) {
+  var n = Number(cycles)
+  if (!isFinite(n) || n < 0) return ""
+  var rounded = Math.round(n * 10) / 10
+  if (Math.abs(rounded - Math.round(rounded)) < 1e-9) return String(Math.round(rounded))
+  return rounded.toFixed(1)
+}
+
+function cycleReportCommand() {
+  var script = [
+    "bat=",
+    "for d in /sys/class/power_supply/*; do",
+    "[ -r \"$d/type\" ] || continue",
+    "[ \"$(cat \"$d/type\")\" = \"Battery\" ] || continue",
+    "if [ -e \"$d/scope\" ] && [ \"$(cat \"$d/scope\" 2>/dev/null)\" = \"Device\" ]; then continue; fi",
+    "if [ -r \"$d/energy_now\" ] || [ -r \"$d/charge_now\" ] || [ -r \"$d/capacity\" ]; then bat=$d; break; fi",
+    "done",
+    "[ -n \"$bat\" ] || exit 0",
+    "fw=0",
+    "if [ -r \"$bat/cycle_count\" ]; then fw=$(cat \"$bat/cycle_count\"); fi",
+    "printf 'firmware\\t%s\\n' \"$fw\"",
+    "name=$(basename \"$bat\")",
+    "obj=",
+    "for p in $(upower -e 2>/dev/null); do",
+    "np=$(upower -i \"$p\" 2>/dev/null | awk '/native-path/ { sub(/^.*native-path:[[:space:]]*/, \"\"); sub(/[[:space:]]+$/, \"\"); print; exit }')",
+    "[ \"$np\" = \"$name\" ] || continue",
+    "obj=$p",
+    "break",
+    "done",
+    "if [ -z \"$obj\" ]; then",
+    "obj=$(upower -e 2>/dev/null | awk '/\\/battery_/ && !/DisplayDevice/ && !/hid/ { print; exit }')",
+    "fi",
+    "if [ -n \"$obj\" ]; then",
+    "busctl call org.freedesktop.UPower \"$obj\" org.freedesktop.UPower.Device GetHistory suu charge 0 60 2>/dev/null | awk '{ for (i = 3; i + 2 <= NF; i += 3) printf \"point\\t%s\\t%s\\t%s\\n\", $i, $(i+1), $(i+2) }'",
+    "fi"
+  ].join("\n")
+  return ["/bin/sh", "-c", script]
+}
+
+function cycleLedgerWriteCommand(dir, ledger) {
+  var directory = String(dir || "")
+  if (directory.charAt(0) !== "/" || directory.indexOf("\n") >= 0) return null
+  var entry = ledger || {}
+  var discharged = Number(entry.dischargedPercent)
+  var coveredUntil = Number(entry.coveredUntil)
+  if (!isFinite(discharged) || discharged < 0 || !isFinite(coveredUntil) || coveredUntil < 0) return null
+  var payload = JSON.stringify({
+    version: 3,
+    dischargedPercent: Math.round(discharged * 1000) / 1000,
+    coveredUntil: coveredUntil
+  })
+  var script = [
+    "mkdir -p -- \"$1\" || exit 1",
+    "tmp=$(mktemp \"$1/cycles.json.XXXXXX\") || exit 1",
+    "if ! printf '%s\\n' \"$2\" > \"$tmp\"; then rm -f -- \"$tmp\"; exit 1; fi",
+    "mv -f -- \"$tmp\" \"$1/cycles.json\""
+  ].join("\n")
+  return ["/bin/sh", "-c", script, "cycle-cap", directory, payload]
+}
+
 function isThresholdPath(path) {
   return /^\/sys\/class\/power_supply\/BAT[A-Za-z0-9._-]+\/charge_control_end_threshold$/.test(String(path || ""))
 }
@@ -258,6 +549,17 @@ if (typeof module !== "undefined") {
     formatDuration: formatDuration,
     secondsUntilChargeLimit: secondsUntilChargeLimit,
     timeUntilChargeLimit: timeUntilChargeLimit,
+    firmwareCycleCount: firmwareCycleCount,
+    dischargeStateCounts: dischargeStateCounts,
+    parseCycleReport: parseCycleReport,
+    parseCycleLedger: parseCycleLedger,
+    settleCycleLedger: settleCycleLedger,
+    beginCycleTracking: beginCycleTracking,
+    reduceCycleReport: reduceCycleReport,
+    advanceCycleLedger: advanceCycleLedger,
+    formatChargeCycles: formatChargeCycles,
+    cycleReportCommand: cycleReportCommand,
+    cycleLedgerWriteCommand: cycleLedgerWriteCommand,
     isThresholdPath: isThresholdPath,
     findThresholdPath: findThresholdPath,
     noneWriter: noneWriter,
