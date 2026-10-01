@@ -227,7 +227,6 @@ function parseCycleLedger(raw) {
     return null
   }
   if (!parsed || typeof parsed !== "object") return null
-  // Version 3 is the state-aware ledger. Older files are replayed from history.
   if (Number(parsed.version) !== 3) return { dischargedPercent: 0, coveredUntil: 0 }
   var discharged = Number(parsed.dischargedPercent)
   var coveredUntil = Number(parsed.coveredUntil)
@@ -238,8 +237,17 @@ function parseCycleLedger(raw) {
 function dischargeStateCounts(state) {
   var n = Number(state)
   if (!isFinite(n)) return true
-  if (n === 1 || n === 4 || n === 5) return false
+  var charging = 1
+  var fullyCharged = 4
+  var pendingCharge = 5
+  if (n === charging || n === fullyCharged || n === pendingCharge) return false
   return true
+}
+
+function sampleHorizon(now) {
+  var t = Number(now)
+  if (!isFinite(t) || t <= 0) t = Date.now() / 1000
+  return t + 120
 }
 
 function validChargePoint(point) {
@@ -249,7 +257,6 @@ function validChargePoint(point) {
   return { t: t, percent: percent, state: Number(point.state) }
 }
 
-// About 200W on a laptop pack. A larger step that fast is a bad sample, not use.
 function plausibleDischarge(drop, dtSeconds) {
   if (!(drop > 0) || drop > 100) return false
   if (drop <= 2) return true
@@ -257,24 +264,26 @@ function plausibleDischarge(drop, dtSeconds) {
   return drop / (dtSeconds / 3600) <= 300
 }
 
-// One charge cycle is 100 percentage points discharged, including partial drains.
-// Depth is measured from a local peak to the trough before the battery rises.
-// A dip of 2% or less that returns to that peak within two minutes is gauge
-// chatter at a charge limit, not a cycle. A drain that is already deeper than
-// that, or older than two minutes, is stored at the trough so the next sample
-// only adds further decline. Charging, fully charged, and pending-charge at
-// the trough are limit dips: anchor them, but do not count them.
-function accountDischarge(points, coveredUntil) {
+function accountDischarge(points, coveredUntil, now) {
+  var horizon = sampleHorizon(now)
   var until = Number(coveredUntil)
   if (!isFinite(until) || until < 0) until = 0
   var sorted = (points || []).slice().sort(function(a, b) { return a.t - b.t })
+  var newest = 0
+  var kept = []
+  for (var j = 0; j < sorted.length; j++) {
+    var sample = validChargePoint(sorted[j])
+    if (!sample || sample.t > horizon) continue
+    if (sample.t > newest) newest = sample.t
+    kept.push(sample)
+  }
+  if (until > horizon && newest > 0) until = newest
   var peak = null
   var trough = null
   var closed = 0
   var endT = until
-  for (var i = 0; i < sorted.length; i++) {
-    var point = validChargePoint(sorted[i])
-    if (!point) continue
+  for (var i = 0; i < kept.length; i++) {
+    var point = kept[i]
     endT = point.t
     if (point.t <= until) {
       peak = point
@@ -307,8 +316,6 @@ function accountDischarge(points, coveredUntil) {
   if (peak && trough && peak.percent - trough.percent > 0.05) {
     var open = peak.percent - trough.percent
     var age = trough.t - peak.t
-    // Commit a drain once it is too deep or too old to be a two-minute blip,
-    // and remember the trough. A later sample then only adds further decline.
     if ((open > 2 || age > 120) && plausibleDischarge(open, age)) {
       if (dischargeStateCounts(trough.state)) openDrop = open
       persistUntil = trough.t
@@ -323,7 +330,7 @@ function accountDischarge(points, coveredUntil) {
   }
 }
 
-function advanceCycleLedger(ledger, points) {
+function advanceCycleLedger(ledger, points, now) {
   var base = 0
   var until = 0
   if (ledger) {
@@ -332,7 +339,7 @@ function advanceCycleLedger(ledger, points) {
     if (isFinite(discharged) && discharged >= 0) base = discharged
     if (isFinite(covered) && covered >= 0) until = covered
   }
-  var delta = accountDischarge(points, until)
+  var delta = accountDischarge(points, until, now)
   var total = Math.round((base + delta.closed + delta.openDrop) * 1000) / 1000
   return {
     dischargedPercent: total,
@@ -341,16 +348,16 @@ function advanceCycleLedger(ledger, points) {
   }
 }
 
-function settleCycleLedger(previous, next) {
+function settleCycleLedger(previous, next, now) {
   if (!previous) return next
   var prevTotal = Number(previous.dischargedPercent)
   var prevUntil = Number(previous.coveredUntil)
   if (!isFinite(prevTotal) || !isFinite(prevUntil)) return next
   var nextTotal = Number(next && next.dischargedPercent)
   var nextUntil = Number(next && next.coveredUntil)
-  // A short history pass keeps the saved total but rewinds the cursor to its
-  // last sample. The next full pass would count that gap again.
-  if (!isFinite(nextTotal) || !isFinite(nextUntil) || prevTotal - nextTotal > 1e-6 || nextUntil < prevUntil) {
+  var horizon = sampleHorizon(now)
+  var cursorAhead = prevUntil > horizon
+  if (!isFinite(nextTotal) || !isFinite(nextUntil) || prevTotal - nextTotal > 1e-6 || nextUntil > horizon || (!cursorAhead && nextUntil < prevUntil)) {
     return {
       dischargedPercent: prevTotal,
       coveredUntil: prevUntil,
@@ -368,7 +375,7 @@ function beginCycleTracking(raw) {
   return { ledger: parsed, ready: true, corrupt: false }
 }
 
-function reduceCycleReport(state, raw) {
+function reduceCycleReport(state, raw, now) {
   if (!state || state.ready !== true) return state
   var report = parseCycleReport(raw)
   if (report === null) return state
@@ -395,7 +402,7 @@ function reduceCycleReport(state, raw) {
       dirty: state.dirty
     }
   }
-  var next = settleCycleLedger(ledger, advanceCycleLedger(ledger, report.points))
+  var next = settleCycleLedger(ledger, advanceCycleLedger(ledger, report.points, now), now)
   var changed = Number(next.dischargedPercent) !== Number(ledger.dischargedPercent) ||
     Number(next.coveredUntil) !== Number(ledger.coveredUntil)
   return {

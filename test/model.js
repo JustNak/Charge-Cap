@@ -372,6 +372,54 @@ const replayed = Model.reduceCycleReport(
 assert.strictEqual(replayed.ledger.dischargedPercent, 793)
 assert.strictEqual(replayed.ledger.coveredUntil, 10000)
 
+const clock = 1000000
+const ahead = Model.advanceCycleLedger(null, [
+  { t: clock - 50, percent: 80, state: 2 },
+  { t: clock + 5000, percent: 70, state: 2 }
+], clock)
+assert.strictEqual(ahead.dischargedPercent, 0)
+assert.ok(ahead.coveredUntil <= clock + 120)
+
+const skewed = Model.advanceCycleLedger(null, [
+  { t: clock + 30, percent: 80, state: 2 }
+], clock)
+assert.strictEqual(skewed.coveredUntil, clock + 30)
+
+const poisoned = {
+  ready: true,
+  dirty: false,
+  firmwareCycles: -1,
+  calculatedCycles: 11.63,
+  ledger: { dischargedPercent: 1163, coveredUntil: clock + 6 * 3600 }
+}
+const anchored = Model.reduceCycleReport(
+  poisoned,
+  reportFrom([
+    { t: clock - 200, percent: 50, state: 2 },
+    { t: clock + 6 * 3600, percent: 56, state: 2 }
+  ]),
+  clock
+)
+assert.strictEqual(anchored.ledger.dischargedPercent, 1163)
+assert.ok(anchored.ledger.coveredUntil <= clock + 120)
+const drained = Model.reduceCycleReport(
+  {
+    ready: true,
+    dirty: anchored.dirty,
+    firmwareCycles: -1,
+    calculatedCycles: anchored.calculatedCycles,
+    ledger: anchored.ledger
+  },
+  reportFrom([
+    { t: clock - 200, percent: 50, state: 2 },
+    { t: clock + 6 * 3600, percent: 56, state: 2 },
+    { t: clock + 30, percent: 40, state: 2 }
+  ]),
+  clock + 40
+)
+assert.strictEqual(drained.ledger.dischargedPercent, 1173)
+assert.ok(drained.ledger.coveredUntil < clock + 6 * 3600)
+
 assert.ok(reportCmd[2].indexOf("type") >= 0)
 assert.ok(reportCmd[2].indexOf("scope") >= 0)
 assert.ok(reportCmd[2].indexOf("Device") >= 0)
